@@ -1,0 +1,165 @@
+body {
+    background-color: #f1f5f9;
+    overflow: hidden;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Grid Background untuk Canvas */
+.canvas-area {
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 30px 30px;
+    cursor: grab;
+}
+
+.db-card {
+    width: 220px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e2e8f0;
+    position: absolute;
+    /* Untuk free movement */
+}
+
+.column-item:hover {
+    background-color: #f8fafc;
+    color: #2563eb;
+}
+
+/* Garis Relasi (Simulasi) */
+.relation-line {
+    position: absolute;
+    height: 2px;
+    background: #94a3b8;
+    transform-origin: top left;
+    z-index: 0;
+}
+
+/* Modal Inspection */
+.inspection-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+.inspection-modal.active {
+    display: flex;
+}
+
+.inspection-content {
+    background: white;
+    border-radius: 20px;
+    width: 90%;
+    max-width: 900px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+.inspection-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.inspection-table th {
+    background: #f8fafc;
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #64748b;
+    border-bottom: 2px solid #e2e8f0;
+}
+
+.inspection-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 13px;
+}
+
+.inspection-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+/* Form Inputs */
+input[type="text"],
+input[type="password"],
+select {
+    transition: all 0.2s ease-in-out;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+select:focus {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+}
+
+/* Status Messages Animation */
+#connectionStatus>div {
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Database Connection Items */
+.db-connection-item {
+    padding: 12px;
+    background: #f8fafc;
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+}
+
+.db-connection-item * {
+    pointer-events: none;
+}
+
+.db-connection-item:hover {
+    border-color: #cbd5e1;
+    background: #f1f5f9;
+    transform: translateX(2px);
+}
+
+.db-connection-item.active {
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1e40af;
+}
+
+.db-connection-item.active i.fa-database {
+    color: #2563eb;
+}
+
+.db-connection-item .connection-check {
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+    color: #10b981;
+}
+
+.db-connection-item.active .connection-check {
+    opacity: 1;
+}
