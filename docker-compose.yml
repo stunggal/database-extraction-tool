@@ -10,9 +10,9 @@ services:
     volumes:
       - ./:/var/www/html
     environment:
-      APP_URL: http://localhost:3000
+      APP_URL: http://localhost:4000
       DB_HOST: 34.60.27.246
       DB_PORT: 1234
-      DB_DATABASE: ${DB_DATABASE:-database_extraction_tool}
+      DB_DATABASE: database_extraction_tool
       DB_USERNAME: root
       DB_PASSWORD: example
