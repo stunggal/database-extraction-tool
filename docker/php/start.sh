@@ -24,6 +24,10 @@ fi
 mkdir -p /var/www/html/storage /var/www/html/bootstrap/cache
 chmod -R ug+rwx /var/www/html/storage /var/www/html/bootstrap/cache
 
+if [ ! -f /var/www/html/vendor/autoload.php ] && [ -f /var/www/html/composer.json ]; then
+  composer install --no-interaction --prefer-dist --optimize-autoloader
+fi
+
 if [ -f /var/www/html/artisan ]; then
   php /var/www/html/artisan key:generate --force || true
 fi
