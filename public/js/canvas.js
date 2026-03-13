@@ -8,6 +8,8 @@ let currentZoom = 1;
 const minZoom = 0.5;
 const maxZoom = 2;
 let panModeEnabled = false;
+let selectedExportFormat = 'json';
+const selectedTables = new Set();
 
 // ===== TABLE DATA =====
 const tableData = {
@@ -248,23 +250,16 @@ const tableData = {
 };
 
 // ===== INSPECTION MODAL FUNCTIONS =====
-window.showInspection = function (tableName) {
-    const modal = document.getElementById('inspectionModal');
+function renderInspectionData(tableName, data) {
     const tableNameEl = document.getElementById('inspectionTableName');
     const structureBody = document.getElementById('structureTableBody');
     const sampleHeader = document.getElementById('sampleDataHeader');
     const sampleBody = document.getElementById('sampleDataBody');
 
-    // Set table name
     tableNameEl.textContent = tableName;
 
-    // Get table data
-    const data = tableData[tableName];
-    if (!data) return;
-
-    // Populate structure
     structureBody.innerHTML = '';
-    data.structure.forEach(col => {
+    (data.structure || []).forEach(col => {
         const keyBadge = col.key ?
             `<span class="px-2 py-1 rounded text-[10px] font-bold ${col.key === 'PRI' ? 'bg-amber-100 text-amber-700' : col.key === 'FOR' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}">${col.key}</span>` :
             '-';
@@ -274,28 +269,89 @@ window.showInspection = function (tableName) {
                         <td class="text-blue-600 font-mono text-xs">${col.type}</td>
                         <td>${col.nullable === 'YES' ? '<span class="text-green-600">✓</span>' : '<span class="text-red-600">✗</span>'}</td>
                         <td>${keyBadge}</td>
-                        <td class="font-mono text-xs text-slate-500">${col.default}</td>
+                        <td class="font-mono text-xs text-slate-500">${col.default ?? 'NULL'}</td>
                     </tr>
                 `;
         structureBody.innerHTML += row;
     });
 
-    // Populate sample data header
-    if (data.sampleData.length > 0) {
+    sampleHeader.innerHTML = '';
+    sampleBody.innerHTML = '';
+
+    if (Array.isArray(data.sampleData) && data.sampleData.length > 0) {
         const columns = Object.keys(data.sampleData[0]);
         sampleHeader.innerHTML = '<tr>' + columns.map(col => `<th>${col}</th>`).join('') + '</tr>';
 
-        // Populate sample data body
-        sampleBody.innerHTML = '';
         data.sampleData.forEach(row => {
-            const rowHtml = '<tr>' + columns.map(col => `<td class="font-mono text-xs">${row[col]}</td>`)
-                .join('') + '</tr>';
+            const rowHtml = '<tr>' + columns.map(col => {
+                const value = row[col] === null ? 'NULL' : String(row[col]);
+                return `<td class="font-mono text-xs">${value}</td>`;
+            }).join('') + '</tr>';
             sampleBody.innerHTML += rowHtml;
         });
+        return;
     }
 
-    // Show modal
+    sampleHeader.innerHTML = '<tr><th>Info</th></tr>';
+    sampleBody.innerHTML = '<tr><td class="text-slate-500">Tidak ada data untuk ditampilkan.</td></tr>';
+}
+
+window.showInspection = function (tableName) {
+    const modal = document.getElementById('inspectionModal');
+    const structureBody = document.getElementById('structureTableBody');
+    const sampleHeader = document.getElementById('sampleDataHeader');
+    const sampleBody = document.getElementById('sampleDataBody');
+
+    document.getElementById('inspectionTableName').textContent = tableName;
+    structureBody.innerHTML = '<tr><td colspan="5" class="text-slate-500">Memuat struktur tabel...</td></tr>';
+    sampleHeader.innerHTML = '<tr><th>Info</th></tr>';
+    sampleBody.innerHTML = '<tr><td class="text-slate-500">Memuat 5 data terbaru...</td></tr>';
     modal.classList.add('active');
+
+    if (!currentConnectionId) {
+        const fallbackData = tableData[tableName];
+        if (fallbackData) {
+            renderInspectionData(tableName, fallbackData);
+            return;
+        }
+
+        structureBody.innerHTML = '<tr><td colspan="5" class="text-red-500">Koneksi aktif tidak ditemukan.</td></tr>';
+        sampleBody.innerHTML = '<tr><td class="text-red-500">Koneksi aktif tidak ditemukan.</td></tr>';
+        return;
+    }
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+
+    fetch(`/getTableInspection/${currentConnectionId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrfToken,
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ table_name: tableName })
+    })
+        .then(response => response.json().then(data => ({ ok: response.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok || !data.success) {
+                throw new Error(data.message || 'Failed to load inspection data');
+            }
+
+            renderInspectionData(tableName, data);
+        })
+        .catch(error => {
+            console.error('Error loading table inspection:', error);
+
+            const fallbackData = tableData[tableName];
+            if (fallbackData) {
+                renderInspectionData(tableName, fallbackData);
+                return;
+            }
+
+            structureBody.innerHTML = '<tr><td colspan="5" class="text-red-500">Gagal memuat struktur tabel.</td></tr>';
+            sampleHeader.innerHTML = '<tr><th>Info</th></tr>';
+            sampleBody.innerHTML = '<tr><td class="text-red-500">Gagal memuat 5 data terbaru.</td></tr>';
+        });
 }
 
 window.closeInspection = function () {
@@ -568,9 +624,116 @@ function clearCanvas() {
     }
 }
 
+function updateTableSelection(tableName, isSelected) {
+    if (isSelected) {
+        selectedTables.add(tableName);
+        return;
+    }
+
+    selectedTables.delete(tableName);
+}
+
+window.toggleTableSelection = function (tableName, isSelected) {
+    updateTableSelection(tableName, isSelected);
+}
+
+function setExportFormat(format) {
+    selectedExportFormat = format;
+
+    document.querySelectorAll('.export-format-btn').forEach(button => {
+        const isActive = button.getAttribute('data-export-format') === format;
+        button.classList.toggle('border-2', isActive);
+        button.classList.toggle('border-blue-600', isActive);
+        button.classList.toggle('text-blue-600', isActive);
+        button.classList.toggle('bg-blue-50', isActive);
+        button.classList.toggle('border', !isActive);
+        button.classList.toggle('border-slate-200', !isActive);
+        button.classList.toggle('text-slate-400', !isActive);
+    });
+}
+
+function getDownloadFilename(response, fallbackName) {
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    return match ? match[1] : fallbackName;
+}
+
+function triggerBrowserDownload(blob, filename) {
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
+}
+
+function initializeExportControls() {
+    document.querySelectorAll('.export-format-btn').forEach(button => {
+        button.addEventListener('click', () => {
+            setExportFormat(button.getAttribute('data-export-format'));
+        });
+    });
+
+    setExportFormat(selectedExportFormat);
+
+    const generateExportBtn = document.getElementById('generateExportBtn');
+    if (!generateExportBtn) return;
+
+    generateExportBtn.addEventListener('click', async () => {
+        if (!currentConnectionId) {
+            window.alert('Pilih koneksi database terlebih dahulu.');
+            return;
+        }
+
+        if (selectedTables.size === 0) {
+            window.alert('Pilih minimal satu tabel untuk di-export.');
+            return;
+        }
+
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        const originalText = generateExportBtn.textContent;
+
+        generateExportBtn.disabled = true;
+        generateExportBtn.textContent = 'Generating...';
+
+        try {
+            const response = await fetch(`/exportTables/${currentConnectionId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Accept': 'application/octet-stream'
+                },
+                body: JSON.stringify({
+                    format: selectedExportFormat,
+                    tables: Array.from(selectedTables)
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: 'Failed to export tables' }));
+                throw new Error(errorData.message || 'Failed to export tables');
+            }
+
+            const blob = await response.blob();
+            const filename = getDownloadFilename(response, `export.${selectedExportFormat}`);
+            triggerBrowserDownload(blob, filename);
+        } catch (error) {
+            console.error('Error exporting tables:', error);
+            window.alert(error.message || 'Gagal melakukan export tabel.');
+        } finally {
+            generateExportBtn.disabled = false;
+            generateExportBtn.textContent = originalText;
+        }
+    });
+}
+
 function loadCanvasFromConnection(connectionId) {
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
+    selectedTables.clear();
     clearCanvas();
 
     fetch(`/getSchema/${connectionId}`, {
@@ -666,6 +829,12 @@ function renderTableCard(tableName, columns, x, y) {
     const existingCards = document.querySelectorAll('.db-card').length;
     const bgColor = cardColors[existingCards % cardColors.length];
 
+    if (!selectedTables.has(tableName)) {
+        selectedTables.add(tableName);
+    }
+
+    const isSelected = selectedTables.has(tableName);
+
     const columnsHtml = columns.map(column => {
         let icon = '';
         if (column.key === 'primary') {
@@ -678,15 +847,17 @@ function renderTableCard(tableName, columns, x, y) {
             <div class="column-item p-2 text-xs flex justify-between items-center rounded-lg hover:bg-slate-50" data-column="${column.name}">
                 <span>${icon}${column.name}</span>
                 <span class="text-[10px] text-slate-400 italic">${String(column.type || '').toUpperCase()}</span>
-                <input type="checkbox" class="ml-2">
             </div>
         `;
     }).join('');
 
     card.innerHTML = `
         <div class="p-3 ${bgColor} text-white rounded-t-xl font-bold text-sm flex justify-between items-center">
-            <span>${tableName}</span>
-            <i class="fas fa-eye text-sm cursor-pointer hover:scale-110 transition-transform" onclick="showInspection('${tableName}')"></i>
+            <div class="flex items-center gap-2 min-w-0">
+                <input type="checkbox" ${isSelected ? 'checked' : ''} class="h-4 w-4 rounded border-white/50 bg-white/10 accent-white" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onchange="toggleTableSelection('${tableName}', this.checked)">
+                <span class="truncate">${tableName}</span>
+            </div>
+            <i class="fas fa-eye text-sm cursor-pointer hover:scale-110 transition-transform" onmousedown="event.stopPropagation()" onclick="event.stopPropagation(); showInspection('${tableName}')"></i>
         </div>
         <div class="p-2 space-y-1">
             ${columnsHtml || '<div class="text-xs text-slate-500">No columns</div>'}
@@ -981,6 +1152,7 @@ function initializeSidebarDrag() {
 // Initialize drag on page load
 document.addEventListener('DOMContentLoaded', function () {
     initializeSidebarDrag();
+    initializeExportControls();
 });
 
 function createTableCard(tableName, x, y, connectionId) {
@@ -1201,49 +1373,50 @@ function updateRelationLines() {
     svg.innerHTML = '';
 
     let drawnCount = 0;
+    const canvasContainer = document.getElementById('canvasContainer');
+    if (!canvasContainer) return;
+
     relations.forEach(rel => {
         console.log(`Processing relation: ${rel.from} -> ${rel.to}`);
 
-        // Find cards
-        const fromCard = document.querySelector(`[data-table="${rel.from}"]`);
-        const toCard = document.querySelector(`[data-table="${rel.to}"]`);
-
-        console.log(`Cards found - from: ${!!fromCard}, to: ${!!toCard}`);
+        // Find cards ONLY inside canvasContainer to avoid matching sidebar items
+        const fromCard = canvasContainer.querySelector(`[data-table="${rel.from}"]`);
+        const toCard = canvasContainer.querySelector(`[data-table="${rel.to}"]`);
 
         if (!fromCard || !toCard) {
-            console.log(`Skipping - missing cards`);
+            console.log(`Skipping - cards not found`);
             return;
         }
 
-        // Get world coordinates from card styles
-        const fromX = parseFloat(fromCard.style.left) || 0;
-        const fromY = parseFloat(fromCard.style.top) || 0;
-        const toX = parseFloat(toCard.style.left) || 0;
-        const toY = parseFloat(toCard.style.top) || 0;
+        // Get card positions from style attributes
+        const fromCardX = parseFloat(fromCard.style.left) || 0;
+        const fromCardY = parseFloat(fromCard.style.top) || 0;
+        const toCardX = parseFloat(toCard.style.left) || 0;
+        const toCardY = parseFloat(toCard.style.top) || 0;
 
-        console.log(`Raw styles - from: left="${fromCard.style.left}" top="${fromCard.style.top}"`);
-        console.log(`Raw styles - to: left="${toCard.style.left}" top="${toCard.style.top}"`);
+        // Card width is hardcoded in CSS (220px)
+        const cardWidth = 220;
 
-        console.log(`Positions - from: (${fromX}, ${fromY}) to: (${toX}, ${toY})`);
+        // Get height or use a reasonable default
+        const fromCardHeight = fromCard.offsetHeight || 150;
+        const toCardHeight = toCard.offsetHeight || 150;
 
-        // Get card dimensions
-        const fromWidth = fromCard.offsetWidth;
-        const fromHeight = fromCard.offsetHeight;
-        const toWidth = toCard.offsetWidth;
-        const toHeight = toCard.offsetHeight;
+        console.log(`Card from pos=(${fromCardX}, ${fromCardY}), height=${fromCardHeight}`);
+        console.log(`Card to pos=(${toCardX}, ${toCardY}), height=${toCardHeight}`);
 
-        // Calculate centers
-        const fromCenterX = fromX + fromWidth / 2;
-        const fromCenterY = fromY + fromHeight / 2;
-        const toCenterX = toX + toWidth / 2;
-        const toCenterY = toY + toHeight / 2;
+        // Connect from right side of from-card to left side of to-card
+        // Using middle Y coordinate
+        const fromCenterX = fromCardX + cardWidth;
+        const fromCenterY = fromCardY + fromCardHeight / 2;
+        const toCenterX = toCardX;
+        const toCenterY = toCardY + toCardHeight / 2;
 
-        // Create curved path
+        console.log(`Connecting from (${fromCenterX}, ${fromCenterY}) to (${toCenterX}, ${toCenterY})`);
+
+        // Create curved bezier path
         const controlX = (fromCenterX + toCenterX) / 2;
         const controlY = (fromCenterY + toCenterY) / 2;
         const pathData = `M ${fromCenterX} ${fromCenterY} Q ${controlX} ${controlY}, ${toCenterX} ${toCenterY}`;
-
-        console.log(`Drawing path: ${pathData}`);
 
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', pathData);
@@ -1254,14 +1427,34 @@ function updateRelationLines() {
 
         drawnCount++;
 
-        // Add arrow at end
-        const angle = Math.atan2(toCenterY - controlY, toCenterX - controlX);
-        const arrowSize = 8;
-        const arrowX1 = toCenterX - arrowSize * Math.cos(angle - Math.PI / 6);
-        const arrowY1 = toCenterY - arrowSize * Math.sin(angle - Math.PI / 6);
-        const arrowX2 = toCenterX - arrowSize * Math.cos(angle + Math.PI / 6);
-        const arrowY2 = toCenterY - arrowSize * Math.sin(angle + Math.PI / 6);
+        // Calculate arrow direction from bezier tangent
+        const tangentX = toCenterX - controlX;
+        const tangentY = toCenterY - controlY;
+        const tangentLength = Math.sqrt(tangentX * tangentX + tangentY * tangentY);
 
+        // Normalize direction
+        const dirX = tangentLength > 0 ? tangentX / tangentLength : 1;
+        const dirY = tangentLength > 0 ? tangentY / tangentLength : 0;
+
+        // Arrow dimensions
+        const arrowLength = 12;
+        const arrowWidth = 8;
+
+        // Arrow base point
+        const baseX = toCenterX - dirX * arrowLength;
+        const baseY = toCenterY - dirY * arrowLength;
+
+        // Perpendicular direction
+        const perpX = -dirY;
+        const perpY = dirX;
+
+        // Arrow wing points
+        const arrowX1 = baseX + perpX * arrowWidth;
+        const arrowY1 = baseY + perpY * arrowWidth;
+        const arrowX2 = baseX - perpX * arrowWidth;
+        const arrowY2 = baseY - perpY * arrowWidth;
+
+        // Draw arrow head
         const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         arrow.setAttribute('points', `${toCenterX},${toCenterY} ${arrowX1},${arrowY1} ${arrowX2},${arrowY2}`);
         arrow.setAttribute('fill', '#ef4444');

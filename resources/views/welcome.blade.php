@@ -60,12 +60,6 @@
             </div>
         </div>
 
-        <div class="p-4 bg-slate-50">
-            <button
-                class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all">
-                Generate Export
-            </button>
-        </div>
     </aside>
 
     <main id="canvasViewport" class="flex-1 relative overflow-auto canvas-area p-10">
@@ -107,28 +101,26 @@
 
     </main>
 
-    <aside class="w-64 bg-white border-l border-slate-200 p-6 z-20">
+    <aside class="w-64 bg-white border-l border-slate-200 p-6 z-20 flex flex-col">
         <h3 class="font-bold text-slate-800 mb-4">Export Settings</h3>
-        <div class="space-y-4">
+        <div class="space-y-4 flex-1">
             <div>
                 <label class="text-xs text-slate-500 font-bold block mb-2">FORMAT</label>
-                <div class="grid grid-cols-2 gap-2">
-                    <button
-                        class="p-2 border-2 border-blue-600 rounded-xl text-xs font-bold text-blue-600 bg-blue-50">JSON</button>
-                    <button class="p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-400">CSV</button>
+                <div class="grid grid-cols-3 gap-2">
+                    <button id="formatJsonBtn" data-export-format="json"
+                        class="export-format-btn p-2 border-2 border-blue-600 rounded-xl text-xs font-bold text-blue-600 bg-blue-50">JSON</button>
+                    <button id="formatCsvBtn" data-export-format="csv"
+                        class="export-format-btn p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-400">CSV</button>
+                    <button id="formatSqlBtn" data-export-format="sql"
+                        class="export-format-btn p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-400">SQL</button>
                 </div>
             </div>
-            <div>
-                <label class="text-xs text-slate-500 font-bold block mb-2">OPTIONS</label>
-                <div class="space-y-2">
-                    <label class="flex items-center gap-2 text-xs text-slate-600">
-                        <input type="checkbox" checked> Include Relations
-                    </label>
-                    <label class="flex items-center gap-2 text-xs text-slate-600">
-                        <input type="checkbox"> Pretty Print
-                    </label>
-                </div>
-            </div>
+        </div>
+        <div class="pt-6 mt-auto">
+            <button id="generateExportBtn"
+                class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all">
+                Generate Export
+            </button>
         </div>
     </aside>
 

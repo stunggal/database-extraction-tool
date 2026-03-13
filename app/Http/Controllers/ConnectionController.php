@@ -10,6 +10,388 @@ use PDOException;
 
 class ConnectionController extends Controller
 {
+    private function buildDsn(Connection $connection): string
+    {
+        return match ($connection->db_type) {
+            'mysql' => "mysql:host={$connection->host};port={$connection->port};dbname={$connection->database}",
+            'postgresql' => "pgsql:host={$connection->host};port={$connection->port};dbname={$connection->database}",
+            'sqlserver' => "sqlsrv:Server={$connection->host},{$connection->port};Database={$connection->database}",
+            'sqlite' => "sqlite:{$connection->database}",
+            default => throw new \InvalidArgumentException('Unsupported database type'),
+        };
+    }
+
+    private function createPdo(Connection $connection): PDO
+    {
+        return new PDO($this->buildDsn($connection), $connection->username, $connection->password, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_TIMEOUT => 5,
+        ]);
+    }
+
+    private function assertValidIdentifier(string $identifier): void
+    {
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $identifier)) {
+            throw new \InvalidArgumentException('Invalid table or column name');
+        }
+    }
+
+    private function quoteIdentifier(string $dbType, string $identifier): string
+    {
+        $this->assertValidIdentifier($identifier);
+
+        return match ($dbType) {
+            'mysql', 'sqlite' => "`{$identifier}`",
+            'postgresql' => '"' . $identifier . '"',
+            'sqlserver' => "[{$identifier}]",
+            default => $identifier,
+        };
+    }
+
+    private function getTableStructure(PDO $pdo, Connection $connection, string $tableName): array
+    {
+        $this->assertValidIdentifier($tableName);
+
+        $structure = [];
+
+        switch ($connection->db_type) {
+            case 'mysql':
+                $stmt = $pdo->query("SHOW COLUMNS FROM {$this->quoteIdentifier('mysql',$tableName)}");
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $structure[] = [
+                        'name' => $row['Field'],
+                        'type' => $row['Type'],
+                        'nullable' => $row['Null'],
+                        'key' => $row['Key'] ?: '',
+                        'default' => $row['Default'] ?? 'NULL',
+                    ];
+                }
+                break;
+            case 'postgresql':
+                $stmt = $pdo->prepare(
+                    "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+                            CASE
+                                WHEN EXISTS (
+                                    SELECT 1
+                                    FROM information_schema.table_constraints tc
+                                    JOIN information_schema.key_column_usage kcu
+                                        ON tc.constraint_name = kcu.constraint_name
+                                        AND tc.table_schema = kcu.table_schema
+                                    WHERE tc.table_schema = 'public'
+                                        AND tc.table_name = c.table_name
+                                        AND tc.constraint_type = 'PRIMARY KEY'
+                                        AND kcu.column_name = c.column_name
+                                ) THEN 'PRI'
+                                WHEN EXISTS (
+                                    SELECT 1
+                                    FROM information_schema.table_constraints tc
+                                    JOIN information_schema.key_column_usage kcu
+                                        ON tc.constraint_name = kcu.constraint_name
+                                        AND tc.table_schema = kcu.table_schema
+                                    WHERE tc.table_schema = 'public'
+                                        AND tc.table_name = c.table_name
+                                        AND tc.constraint_type = 'FOREIGN KEY'
+                                        AND kcu.column_name = c.column_name
+                                ) THEN 'FOR'
+                                WHEN EXISTS (
+                                    SELECT 1
+                                    FROM information_schema.table_constraints tc
+                                    JOIN information_schema.key_column_usage kcu
+                                        ON tc.constraint_name = kcu.constraint_name
+                                        AND tc.table_schema = kcu.table_schema
+                                    WHERE tc.table_schema = 'public'
+                                        AND tc.table_name = c.table_name
+                                        AND tc.constraint_type = 'UNIQUE'
+                                        AND kcu.column_name = c.column_name
+                                ) THEN 'UNI'
+                                ELSE ''
+                            END AS key_type
+                     FROM information_schema.columns c
+                     WHERE c.table_schema = 'public' AND c.table_name = :table_name
+                     ORDER BY c.ordinal_position"
+                );
+                $stmt->execute(['table_name' => $tableName]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $structure[] = [
+                        'name' => $row['column_name'],
+                        'type' => $row['data_type'],
+                        'nullable' => $row['is_nullable'],
+                        'key' => $row['key_type'],
+                        'default' => $row['column_default'] ?? 'NULL',
+                    ];
+                }
+                break;
+            case 'sqlite':
+                $foreignStmt = $pdo->query("PRAGMA foreign_key_list({$this->quoteIdentifier('sqlite',$tableName)})");
+                $foreignRows = $foreignStmt->fetchAll(PDO::FETCH_ASSOC);
+                $foreignColumns = array_column($foreignRows, 'from');
+
+                $stmt = $pdo->query("PRAGMA table_info({$this->quoteIdentifier('sqlite',$tableName)})");
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $key = '';
+                    if ((int) $row['pk'] === 1) {
+                        $key = 'PRI';
+                    } elseif (in_array($row['name'], $foreignColumns, true)) {
+                        $key = 'FOR';
+                    }
+
+                    $structure[] = [
+                        'name' => $row['name'],
+                        'type' => $row['type'],
+                        'nullable' => ((int) $row['notnull'] === 1 || (int) $row['pk'] === 1) ? 'NO' : 'YES',
+                        'key' => $key,
+                        'default' => $row['dflt_value'] ?? 'NULL',
+                    ];
+                }
+                break;
+            case 'sqlserver':
+                $stmt = $pdo->prepare(
+                    "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
+                            CASE
+                                WHEN pk.COLUMN_NAME IS NOT NULL THEN 'PRI'
+                                WHEN fk.COLUMN_NAME IS NOT NULL THEN 'FOR'
+                                ELSE ''
+                            END AS key_type
+                     FROM INFORMATION_SCHEMA.COLUMNS c
+                     LEFT JOIN (
+                        SELECT ku.COLUMN_NAME
+                        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+                            ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+                        WHERE tc.TABLE_NAME = :table_name_pk AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                     ) pk ON c.COLUMN_NAME = pk.COLUMN_NAME
+                     LEFT JOIN (
+                        SELECT ku.COLUMN_NAME
+                        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+                            ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+                        WHERE tc.TABLE_NAME = :table_name_fk AND tc.CONSTRAINT_TYPE = 'FOREIGN KEY'
+                     ) fk ON c.COLUMN_NAME = fk.COLUMN_NAME
+                     WHERE c.TABLE_NAME = :table_name
+                     ORDER BY c.ORDINAL_POSITION"
+                );
+                $stmt->execute([
+                    'table_name_pk' => $tableName,
+                    'table_name_fk' => $tableName,
+                    'table_name' => $tableName,
+                ]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $structure[] = [
+                        'name' => $row['COLUMN_NAME'],
+                        'type' => $row['DATA_TYPE'],
+                        'nullable' => $row['IS_NULLABLE'],
+                        'key' => $row['key_type'],
+                        'default' => $row['COLUMN_DEFAULT'] ?? 'NULL',
+                    ];
+                }
+                break;
+        }
+
+        return $structure;
+    }
+
+    private function getLatestRows(PDO $pdo, Connection $connection, string $tableName, array $structure): array
+    {
+        if (empty($structure)) {
+            return [];
+        }
+
+        $orderColumn = null;
+        foreach ($structure as $column) {
+            if (($column['key'] ?? '') === 'PRI') {
+                $orderColumn = $column['name'];
+                break;
+            }
+        }
+
+        if (!$orderColumn) {
+            foreach (['created_at', 'updated_at', $structure[0]['name']] as $candidate) {
+                if (in_array($candidate, array_column($structure, 'name'), true)) {
+                    $orderColumn = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if (!$orderColumn) {
+            return [];
+        }
+
+        $quotedTable = $this->quoteIdentifier($connection->db_type, $tableName);
+        $quotedOrderColumn = $this->quoteIdentifier($connection->db_type, $orderColumn);
+
+        $sql = match ($connection->db_type) {
+            'sqlserver' => "SELECT TOP 5 * FROM {$quotedTable} ORDER BY {$quotedOrderColumn} DESC",
+            default => "SELECT * FROM {$quotedTable} ORDER BY {$quotedOrderColumn} DESC LIMIT 5",
+        };
+
+        $stmt = $pdo->query($sql);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getAllRows(PDO $pdo, Connection $connection, string $tableName, array $structure): array
+    {
+        if (empty($structure)) {
+            return [];
+        }
+
+        $quotedTable = $this->quoteIdentifier($connection->db_type, $tableName);
+        $sql = "SELECT * FROM {$quotedTable}";
+
+        $orderColumn = null;
+        foreach ($structure as $column) {
+            if (($column['key'] ?? '') === 'PRI') {
+                $orderColumn = $column['name'];
+                break;
+            }
+        }
+
+        if (!$orderColumn) {
+            foreach (['created_at', 'updated_at'] as $candidate) {
+                if (in_array($candidate, array_column($structure, 'name'), true)) {
+                    $orderColumn = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if ($orderColumn) {
+            $sql .= ' ORDER BY ' . $this->quoteIdentifier($connection->db_type, $orderColumn) . ' DESC';
+        }
+
+        $stmt = $pdo->query($sql);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function toCsvValue(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        $stringValue = str_replace('"', '""', (string) $value);
+        return '"' . $stringValue . '"';
+    }
+
+    private function toSqlValue(mixed $value): string
+    {
+        if ($value === null) {
+            return 'NULL';
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        return "'" . str_replace("'", "''", (string) $value) . "'";
+    }
+
+    private function buildJsonExport(Connection $connection, array $tablesPayload): string
+    {
+        return json_encode([
+            'connection' => $connection->connection_name,
+            'database' => $connection->database,
+            'exported_at' => now()->toIso8601String(),
+            'tables' => $tablesPayload,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+    }
+
+    private function buildCsvExport(array $tablesPayload): string
+    {
+        $chunks = [];
+
+        foreach ($tablesPayload as $tableName => $payload) {
+            $columns = array_map(fn($column) => $column['name'], $payload['structure'] ?? []);
+            $rows = $payload['rows'] ?? [];
+
+            $chunks[] = 'table,' . $this->toCsvValue($tableName);
+
+            if (empty($columns) && !empty($rows)) {
+                $columns = array_keys($rows[0]);
+            }
+
+            if (!empty($columns)) {
+                $chunks[] = implode(',', array_map(fn($column) => $this->toCsvValue($column), $columns));
+
+                foreach ($rows as $row) {
+                    $chunks[] = implode(',', array_map(
+                        fn($column) => $this->toCsvValue($row[$column] ?? null),
+                        $columns
+                    ));
+                }
+            }
+
+            $chunks[] = '';
+        }
+
+        return implode("\r\n", $chunks);
+    }
+
+    private function buildSqlExport(Connection $connection, array $tablesPayload): string
+    {
+        $chunks = [
+            '-- Export generated at ' . now()->toDateTimeString(),
+            '-- Connection: ' . $connection->connection_name,
+            '-- Database: ' . $connection->database,
+            '',
+        ];
+
+        foreach ($tablesPayload as $tableName => $payload) {
+            $quotedTable = $this->quoteIdentifier($connection->db_type, $tableName);
+            $columns = array_map(fn($column) => $column['name'], $payload['structure'] ?? []);
+            $rows = $payload['rows'] ?? [];
+
+            $chunks[] = '-- Table: ' . $tableName;
+
+            if (empty($rows)) {
+                $chunks[] = '-- No rows found';
+                $chunks[] = '';
+                continue;
+            }
+
+            if (empty($columns)) {
+                $columns = array_keys($rows[0]);
+            }
+
+            $quotedColumns = implode(', ', array_map(
+                fn($column) => $this->quoteIdentifier($connection->db_type, $column),
+                $columns
+            ));
+
+            foreach ($rows as $row) {
+                $values = implode(', ', array_map(
+                    fn($column) => $this->toSqlValue($row[$column] ?? null),
+                    $columns
+                ));
+                $chunks[] = "INSERT INTO {$quotedTable} ({$quotedColumns}) VALUES ({$values});";
+            }
+
+            $chunks[] = '';
+        }
+
+        return implode("\n", $chunks);
+    }
+
+    private function buildExportFilename(Connection $connection, string $format): string
+    {
+        $connectionName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $connection->connection_name) ?: 'connection';
+        return $connectionName . '_export_' . now()->format('Ymd_His') . '.' . $format;
+    }
+
     public function addConnection(Request $request)
     {
         try {
@@ -401,6 +783,138 @@ class ConnectionController extends Controller
                 'success' => false,
                 'message' => 'An error occurred',
                 'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getTableInspection($id, Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'table_name' => 'required|string'
+            ]);
+
+            $tableName = $validated['table_name'];
+            $connection = Connection::findOrFail($id);
+            $pdo = $this->createPdo($connection);
+
+            $structure = $this->getTableStructure($pdo, $connection, $tableName);
+            $sampleData = $this->getLatestRows($pdo, $connection, $tableName, $structure);
+
+            return response()->json([
+                'success' => true,
+                'table_name' => $tableName,
+                'structure' => $structure,
+                'sampleData' => $sampleData,
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Table name is required',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection not found',
+            ], 404);
+        } catch (PDOException $e) {
+            Log::error('PDO Error fetching table inspection:', ['message' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch table inspection',
+                'error' => $e->getMessage(),
+            ], 500);
+        } catch (\Exception $e) {
+            Log::error('Error fetching table inspection:', ['message' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function exportTables($id, Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'format' => 'required|in:json,csv,sql',
+                'tables' => 'required|array|min:1',
+                'tables.*' => 'required|string',
+            ]);
+
+            $connection = Connection::findOrFail($id);
+            $pdo = $this->createPdo($connection);
+
+            $tablesPayload = [];
+            foreach ($validated['tables'] as $tableName) {
+                $this->assertValidIdentifier($tableName);
+
+                $structure = $this->getTableStructure($pdo, $connection, $tableName);
+                $rows = $this->getAllRows($pdo, $connection, $tableName, $structure);
+
+                $tablesPayload[$tableName] = [
+                    'structure' => $structure,
+                    'rows' => $rows,
+                ];
+            }
+
+            $format = $validated['format'];
+            $content = match ($format) {
+                'json' => $this->buildJsonExport($connection, $tablesPayload),
+                'csv' => $this->buildCsvExport($tablesPayload),
+                'sql' => $this->buildSqlExport($connection, $tablesPayload),
+            };
+
+            $contentType = match ($format) {
+                'json' => 'application/json; charset=UTF-8',
+                'csv' => 'text/csv; charset=UTF-8',
+                'sql' => 'application/sql; charset=UTF-8',
+            };
+
+            return response($content, 200, [
+                'Content-Type' => $contentType,
+                'Content-Disposition' => 'attachment; filename="' . $this->buildExportFilename($connection, $format) . '"',
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Format dan tabel wajib dipilih',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection not found',
+            ], 404);
+        } catch (PDOException $e) {
+            Log::error('PDO Error exporting tables:', ['message' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to export tables',
+                'error' => $e->getMessage(),
+            ], 500);
+        } catch (\Exception $e) {
+            Log::error('Error exporting tables:', ['message' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred',
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
