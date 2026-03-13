@@ -3,8 +3,8 @@ FROM php:8.2.9-apache
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash \
-    && docker-php-ext-install pdo pdo_mysql \
+    && apt-get install -y --no-install-recommends bash libzip-dev \
+    && docker-php-ext-install pdo pdo_mysql zip \
     && a2enmod rewrite \
     && sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf \
     && sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/apache2.conf \
