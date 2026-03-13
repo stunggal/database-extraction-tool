@@ -9,7 +9,7 @@ if [ -f /var/www/html/.env ]; then
   APP_URL_VALUE="${APP_URL:-http://localhost:3000}"
   DB_HOST_VALUE="${DB_HOST:-34.60.27.246}"
   DB_PORT_VALUE="${DB_PORT:-1234}"
-  DB_DATABASE_VALUE="${DB_DATABASE:-database-extraction-tool}"
+  DB_DATABASE_VALUE="${DB_DATABASE:-database_extraction_tool}"
   DB_USERNAME_VALUE="${DB_USERNAME:-root}"
   DB_PASSWORD_VALUE="${DB_PASSWORD:-example}"
 
