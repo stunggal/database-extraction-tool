@@ -6,7 +6,7 @@ if [ ! -f /var/www/html/.env ] && [ -f /var/www/html/.env.example ]; then
 fi
 
 if [ -f /var/www/html/.env ]; then
-  APP_URL_VALUE="${APP_URL:-http://localhost:3000}"
+  APP_URL_VALUE="${APP_URL:-http://localhost:4000}"
   DB_HOST_VALUE="${DB_HOST:-34.60.27.246}"
   DB_PORT_VALUE="${DB_PORT:-1234}"
   DB_DATABASE_VALUE="${DB_DATABASE:-database_extraction_tool}"
